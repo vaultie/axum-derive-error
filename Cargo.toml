@@ -3,6 +3,9 @@ name = "axum-derive-error"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+aide = []
+
 [lib]
 proc-macro = true
 

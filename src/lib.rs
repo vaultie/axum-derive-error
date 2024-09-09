@@ -74,6 +74,16 @@ impl ToTokens for HttpErrorOpts {
             }
         });
 
+        let aide_impl = if cfg!(feature = "aide") {
+            quote! {
+                impl #impl_generics ::aide::OperationOutput for #enum_ident #ty_generics #where_clause {
+                    type Inner = ();
+                }
+            }
+        } else {
+            quote! {}
+        };
+
         quote! {
             impl #impl_generics ::axum::response::IntoResponse for #enum_ident #ty_generics #where_clause {
                 fn into_response(self) -> ::axum::response::Response {
@@ -82,6 +92,8 @@ impl ToTokens for HttpErrorOpts {
                     }
                 }
             }
+
+            #aide_impl
         }
         .to_tokens(tokens);
     }

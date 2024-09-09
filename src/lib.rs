@@ -69,7 +69,9 @@ impl ToTokens for HttpErrorOpts {
                         })
                     };
 
-                    ::axum::Json(value).into_response()
+                    let mut response = ::axum::Json(value).into_response();
+                    *response.status_mut() = #status;
+                    response
                 }
             }
         });

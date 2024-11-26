@@ -4,8 +4,8 @@ use darling::{
     FromDeriveInput, FromVariant,
 };
 use proc_macro::TokenStream;
-use quote::{quote, ToTokens};
-use syn::{DeriveInput, Expr, Generics, Ident};
+use quote::{format_ident, quote, ToTokens};
+use syn::{DeriveInput, Expr, Generics, Ident, Visibility};
 
 #[derive(FromVariant, Debug)]
 #[darling(attributes(http_error))]
@@ -21,6 +21,7 @@ struct ErrorVariant {
 #[darling(attributes(http_error))]
 struct HttpErrorOpts {
     ident: Ident,
+    vis: Visibility,
     generics: Generics,
     data: Data<ErrorVariant, Ignored>,
 }
@@ -28,12 +29,15 @@ struct HttpErrorOpts {
 impl ToTokens for HttpErrorOpts {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         let enum_ident = &self.ident;
+        let enum_vis = &self.vis;
         let (impl_generics, ty_generics, where_clause) = self.generics.split_for_impl();
 
         let data = match self.data.as_ref() {
             Data::Enum(val) => val,
             Data::Struct(_) => panic!("expected an error enum, not a struct"),
         };
+
+        let error_struct_name = format_ident!("__HttpError{}", enum_ident);
 
         let matcher = data.iter().map(|variant| {
             let name = &variant.ident;
@@ -58,20 +62,18 @@ impl ToTokens for HttpErrorOpts {
                     let value = if !::core::cfg!(debug_assertions) && #status == #internal_error {
                         ::tracing::error!(error = %self, "internal server error");
 
-                        ::serde_json::json!({
-                            "code": #status.as_u16(),
-                            "message": "Internal server error"
-                        })
+                        #error_struct_name {
+                            code: #status.as_u16(),
+                            message: "Internal server error".to_string()
+                        }
                     } else {
-                        ::serde_json::json!({
-                            "code": #status.as_u16(),
-                            "message": self.to_string()
-                        })
+                        #error_struct_name {
+                            code: #status.as_u16(),
+                            message: self.to_string()
+                        }
                     };
 
-                    let mut response = ::axum::Json(value).into_response();
-                    *response.status_mut() = #status;
-                    response
+                    (value, #status)
                 }
             }
         });
@@ -79,7 +81,34 @@ impl ToTokens for HttpErrorOpts {
         let aide_impl = if cfg!(feature = "aide") {
             quote! {
                 impl #impl_generics ::aide::OperationOutput for #enum_ident #ty_generics #where_clause {
-                    type Inner = ();
+                    type Inner = Self;
+
+                    fn operation_response(
+                        ctx: &mut ::aide::gen::GenContext,
+                        operation: &mut ::aide::openapi::Operation
+                    ) -> Option<::aide::openapi::Response> {
+                        <::axum::Json<#error_struct_name> as ::aide::OperationOutput>::operation_response(
+                            ctx,
+                            operation
+                        )
+                    }
+
+                    fn inferred_responses(
+                        ctx: &mut ::aide::gen::GenContext,
+                        operation: &mut ::aide::openapi::Operation
+                    ) -> Vec<(Option<u16>, ::aide::openapi::Response)> {
+                        Vec::new()
+                    }
+                }
+
+                impl #impl_generics ::serde::Serialize for #enum_ident #ty_generics #where_clause {
+                    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+                    where
+                        S: ::serde::Serializer
+                    {
+                        let (error, _) = self.into_private_error();
+                        #error_struct_name::serialize(&error, serializer)
+                    }
                 }
             }
         } else {
@@ -87,11 +116,26 @@ impl ToTokens for HttpErrorOpts {
         };
 
         quote! {
-            impl #impl_generics ::axum::response::IntoResponse for #enum_ident #ty_generics #where_clause {
-                fn into_response(self) -> ::axum::response::Response {
+            #[derive(::serde::Serialize, ::schemars::JsonSchema)]
+            #enum_vis struct #error_struct_name {
+                code: u16,
+                message: String
+            }
+
+            impl #impl_generics #enum_ident #ty_generics #where_clause {
+                fn into_private_error(&self) -> (#error_struct_name, ::axum::http::StatusCode) {
                     match self {
                         #(#matcher),*
                     }
+                }
+            }
+
+            impl #impl_generics ::axum::response::IntoResponse for #enum_ident #ty_generics #where_clause {
+                fn into_response(self) -> ::axum::response::Response {
+                    let (error, status) = self.into_private_error();
+                    let mut response = ::axum::Json(error).into_response();
+                    *response.status_mut() = status;
+                    response
                 }
             }
 

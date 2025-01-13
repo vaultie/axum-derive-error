@@ -115,8 +115,17 @@ impl ToTokens for HttpErrorOpts {
             quote! {}
         };
 
+        let schemars_derive = if cfg!(feature = "aide") {
+            quote! {
+                #[derive(::schemars::JsonSchema)]
+            }
+        } else {
+            quote! {}
+        };
+
         quote! {
-            #[derive(::serde::Serialize, ::schemars::JsonSchema)]
+            #[derive(::serde::Serialize)]
+            #schemars_derive
             #enum_vis struct #error_struct_name {
                 code: u16,
                 message: String
